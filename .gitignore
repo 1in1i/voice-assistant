@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# virtual environment
+venv/
+.env/
+
+# system files
+.DS_Store
+
+# audio / model files (建议不上传)
+*.wav
+*.mp3
+*.onnx
