@@ -12,7 +12,6 @@ venv/
 # audio / model files
 *.wav
 *.mp3
-*.onnx
 
 frontend/node_modules/
 frontend/dist/
