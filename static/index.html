@@ -104,7 +104,11 @@
             formData.append('file', blob, "input.wav");
 
             try {
-                const response = await fetch('/chat', { method: 'POST', body: formData });
+                const response = await fetch('http://127.0.0.1:8000/chat', {
+                    method: 'POST',
+                    body: formData
+                });
+
                 const data = await response.json();
 
                 userTxt.innerText = data.user_text;

@@ -9,7 +9,10 @@ venv/
 # system files
 .DS_Store
 
-# audio / model files (建议不上传)
+# audio / model files
 *.wav
 *.mp3
 *.onnx
+
+frontend/node_modules/
+frontend/dist/
