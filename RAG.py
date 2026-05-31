@@ -1,12 +1,9 @@
-import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-from langchain_community.chat_message_histories import ChatMessageHistory
 
 class RAG:
     def __init__(self):
@@ -34,7 +31,7 @@ class RAG:
 
     def _setup_rag_chain(self):
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a capable assistant, answering user questions based on the following background information, answer should be brief within 10 words. Background: {context}"),
+            ("system", "You are a capable assistant, answering user questions based on the following background information, answer should be brief within 10 words. You MUST always answer in German only. Background: {context}"),
             MessagesPlaceholder(variable_name="history"),
             ("human", "Answer the following questions: {question}")
         ])
@@ -53,7 +50,7 @@ class RAG:
 
         )
 
-    def ask(self, question, history_messages):
+    def ask_stream(self, question, history_messages):
         langchain_messages = []
         for msg in history_messages:
             if msg["role"] == "user":
@@ -61,7 +58,9 @@ class RAG:
             elif msg["role"] == "assistant":
                 langchain_messages.append(AIMessage(content=msg["content"]))
 
-        return self.chain.invoke({
+        for chunk in self.chain.stream({
             "question": str(question),
-            "chat_history": history_messages
-        })
+            "chat_history": langchain_messages
+        }):
+            yield chunk
+

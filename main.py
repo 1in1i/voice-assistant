@@ -1,16 +1,15 @@
 import os
 import shutil
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse
-import uvicorn
 import time
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+
 from RAG import RAG
 from STT_module import SpeechToText
 from TTS_module import TextToSpeech
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -21,64 +20,107 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-User-Text", "X-Ai-Text"]
 )
 
-stt_service = SpeechToText(model_size="small", device="cpu")
+stt_service = SpeechToText(model_size="base", device="cpu", compute_type="int8")
 rag_service = RAG()
 tts_service = TextToSpeech()
 
 chat_memory = []
+
+
 @app.get("/")
 async def read_index():
     return FileResponse('static/index.html')
 
+
 @app.post("/chat")
-async def chat(file: UploadFile = File(...)):
+def chat(file: UploadFile = File(...)):
     global chat_memory
-    t_total_start = time.perf_counter()
+
     temp_input_path = "temp_input.wav"
     with open(temp_input_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
+
     try:
-        # STT
+        # 1. (STT)
         t_stt_start = time.perf_counter()
         user_text = stt_service.transcribe(temp_input_path)
         t_stt = time.perf_counter() - t_stt_start
         os.remove(temp_input_path)
-        # RAG
-        t_llm_start = time.perf_counter()
-        response = rag_service.ask(user_text, chat_memory)
-        t_llm = time.perf_counter() - t_llm_start
-        chat_memory.append({"role": "user", "content": user_text})
-        chat_memory.append({"role": "assistant", "content": response})
 
+        print(f"\n[STT]: {t_stt:.3f}s | Text: '{user_text}'")
+
+        chat_memory.append({"role": "user", "content": user_text})
         if len(chat_memory) > 20:
             chat_memory = chat_memory[-20:]
 
-        print(f"DEBUG: RAG response: {response}")
-        # TTS
-        t_tts_start = time.perf_counter()
-        audio_response_path = tts_service.speak(response)
-        t_tts = time.perf_counter() - t_tts_start
-        #=========
-        t_total = time.perf_counter() - t_total_start
+        def stream_pipeline_wrapper():
+            llm_text_generator = rag_service.ask_stream(user_text, chat_memory[:-1])
 
-        print("\n===== PIPELINE TIME =====")
-        print(f"STT : {t_stt:.3f}s")
-        print(f"LLM : {t_llm:.3f}s")
-        print(f"TTS : {t_tts:.3f}s")
-        print(f"TOTAL : {t_total:.3f}s")
-        print("=========================\n")
-        #========
-        return {
-            "user_text": user_text,
-            "audio_response_path": audio_response_path,
-            "response": response
-        }
+            latest_reply = ""
+
+            def track_and_buffer_llm(text_stream):
+                global latest_reply
+                full_reply = ""
+                for text_chunk in text_stream:
+                    full_reply += text_chunk
+                    yield text_chunk
+
+                print(f"[LLM]: {full_reply}")
+                latest_reply = full_reply
+                chat_memory.append({"role": "assistant", "content": full_reply})
+
+            tracked_text_stream = track_and_buffer_llm(llm_text_generator)
+
+            def chunk_text_by_punctuation(text_stream):
+                buffer = ""
+                punctuations = ('.', '?', '!', ',', ';', '。', '？', '！', '，', '；', '\n')
+
+                for text_chunk in text_stream:
+                    buffer += text_chunk
+                    if any(p in buffer for p in punctuations) or len(buffer) >= 80:
+                        yield buffer
+                        buffer = ""
+                if buffer.strip():
+                    yield buffer
+
+            buffered_text_stream = chunk_text_by_punctuation(tracked_text_stream)
+
+            audio_stream = tts_service.speak_stream(buffered_text_stream)
+
+            leftover = b""
+            for audio_bytes in audio_stream:
+                if leftover:
+                    audio_bytes = leftover + audio_bytes
+                    leftover = b""
+
+                if len(audio_bytes) % 2 != 0:
+                    leftover = audio_bytes[-1:]
+                    audio_bytes = audio_bytes[:-1]
+
+                if audio_bytes:
+                    yield audio_bytes
+
+        #
+        return StreamingResponse(
+            stream_pipeline_wrapper(),
+            media_type="audio/pcm",
+            headers={"X-User-Text": user_text.encode('utf-8').decode('latin-1')}
+        )
 
     except Exception as e:
+        print("Error：", e)
+        if os.path.exists(temp_input_path):
+            os.remove(temp_input_path)
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.get("/latest_reply")
+def get_latest_reply():
+    return {
+        "reply": latest_reply
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
